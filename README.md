@@ -1,259 +1,419 @@
-# PagueVeloz – Transaction Processor (Net 9 + SQL Server + RabbitMQ + EFK/APM)
+# PagueVeloz – Transaction Processor (C# .NET 9)
 
-Implementação de um **processador de transações** com foco em:
-- **Consistência** (operações atômicas com rollback)
-- **Concorrência** (locks e ordenação para evitar deadlocks)
-- **Idempotência** (reference_id único)
-- **Auditabilidade** (ledger por conta + outbox)
-- **Observabilidade** (logs estruturados + traces)
+Implementação do **núcleo transacional** do desafio “Sistema de Processamento de Transações Financeiras”, com foco em:
+
+- **Consistência forte por conta** (operações atômicas e serializadas por lock)
+- **Concorrência segura** (evita “double spend”, com ordenação de locks para multi-contas)
+- **Idempotência** por `reference_id` (repetição devolve o mesmo resultado)
+- **Auditabilidade** (registro imutável de eventos por conta / ledger + trilha de transações)
+- **Resiliência** (Outbox + retry com backoff exponencial + jitter + circuit breaker)
+- **Observabilidade** (logs estruturados + tracing/métricas OpenTelemetry + health checks)
 
 > Convenção: valores monetários são `long` em **centavos**.
 
 ---
 
-## Arquitetura
+## 1) Como iniciar (Quickstart)
 
-- **Api**: Minimal API (REST) + Swagger, serialização `snake_case`.
-- **Application**: casos de uso (MediatR), validação (FluentValidation), contratos.
-- **Domain**: regras de negócio (saldo/reserva/captura/limite), invariantes.
-- **Infrastructure**: SQL Server (EF Core), repositórios, outbox, fila de comandos, RabbitMQ.
-- **Worker**: processa **outbox** (publica em RabbitMQ) e **fila interna** (`/transactions/enqueue`).
+### Requisitos
+- **.NET 9 SDK**
+- **Docker + Docker Compose** (recomendado)
+- (Opcional) **SQL Server local** se não usar Docker
 
-Padrões aplicados:
-- **Clean Architecture / DDD-ish** (separação Domain/Application/Infra)
-- **Outbox Pattern** (garante “at-least-once delivery” para eventos)
-- **Pessimistic Locking** + **ordenação de locks** (evita race + deadlock)
+### Subir tudo via Docker (recomendado)
 
----
+Na raiz do repositório:
 
-## Modelo de Dados (SQL Server)
+```bash
+docker compose up --build
+```
 
-Tabelas principais:
-- `Accounts` – saldo, reservado, limite, status, `LedgerSequence`.
-- `Transactions` – registro idempotente por `ReferenceId` (**UNIQUE**).
-- `AccountEvents` – ledger imutável por conta (sequência por conta).
-- `OutboxEvents` – eventos pendentes de publicação (retry/backoff).
-- `QueuedCommands` – fila interna para processamento assíncrono.
-
----
-
-## Semântica das Operações
-
-- `credit`: `balance += amount`
-- `debit`: `balance -= amount` (permitido ir negativo até `credit_limit`)
-- `reserve`: `reserved += amount` (não mexe no `balance`)
-- `capture`: **confirma reserva** → `reserved -= amount` e `balance -= amount`
-- `transfer`: débito na origem + crédito no destino (mesma transação SQL)
-- `reversal`: desfaz uma transação anterior (`related_reference_id`)
-  - `credit` → débito
-  - `debit` → crédito
-  - `reserve` → release
-  - `capture` → refund (crédito)
-  - `transfer` → transfere de volta (débito no destino + crédito na origem)
-
----
-
-## Concorrência e Consistência
-
-- Cada operação roda dentro de uma **transação SQL** (IsolationLevel `Serializable` no caso de processamento síncrono).
-- Para evitar “double spend”:
-  - leitura com lock: `SELECT ... WITH (UPDLOCK, ROWLOCK)`
-  - para `transfer` e `reversal` com 2 contas: **lock ordering** (ordem lexicográfica do `account_id`).
-
----
-
-## Idempotência
-
-- `Transactions.ReferenceId` é **único**.
-- Se uma requisição chega repetida com o mesmo `reference_id`, o sistema:
-  - retorna o mesmo resultado previamente persistido
-  - não re-executa a lógica de negócio.
-
----
-
-## Observabilidade (EFK + APM)
-
-- Logs estruturados (Serilog, compact JSON) → **Filebeat** → Elasticsearch → Kibana.
-- Traces (OpenTelemetry) → **APM Server** → Kibana (APM).
-
-Serviços:
-- Kibana: `http://localhost:5601`
-- RabbitMQ UI: `http://localhost:15672` (guest/guest)
+Serviços expostos:
 - API: `http://localhost:5000`
 - Swagger: `http://localhost:5000/swagger`
+- RabbitMQ UI: `http://localhost:15672` (guest/guest)
+- Kibana: `http://localhost:5601`
+- Elasticsearch: `http://localhost:9200`
+- APM Server (OTLP): `http://localhost:8200`
 
-### Visualizar logs no Kibana
+Health checks:
+- `GET /health/live`
+- `GET /health/ready`
 
-- Kibana: `http://localhost:5601` (pode levar ~1–2 min para ficar “available”).
-- O compose inclui um **auto-bootstrap** (service `pv-kibana-setup`) que:
-  - importa *Data Views* (`filebeat-*` e `pv-events-*`)
-  - cria 2 *Saved Searches* (API e Worker)
-  - define `filebeat-*` como padrão
+### Rodar local sem Docker (somente API)
+1. Configure `ConnectionStrings__SqlServer` (e, se quiser eventos, RabbitMQ).
+2. Rode:
+```bash
+dotnet build
+dotnet run --project src/PagueVeloz.TransactionProcessor.Api
+```
 
-Onde olhar:
-
-1) **Discover** → selecione o *data view* `filebeat-*`
-2) No menu de **Saved** / **Open**, abra:
-   - `PV API - Requests & Errors`
-   - `PV Worker - Errors & Warnings`
-
-Filtros úteis (KQL):
-- `reference_id : "TXN-001"`
-- `account_id : "ACC-001"`
-- `operation : "debit"`
-- `service.name : "pv-consumer"` (consumer RabbitMQ)
-- `event_type : "transaction.processed"` (quando consultar `pv-events-*`)
-
-> Persistência: Kibana salva configurações no Elasticsearch (índice `.kibana`). O compose cria o volume `esdata`, então **data views / saved searches ficam persistidos** entre `docker compose down/up`. Se você rodar `docker compose down -v`, aí sim reseta tudo.
-
-### Visualizar traces (APM)
-
-
-No Kibana, vá em **Observability → APM**. Se não aparecer nada, valide que as variáveis `OTEL_EXPORTER_OTLP_ENDPOINT` e `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` estão presentes nos containers `api` e `worker`.
-
-### Métricas (OpenTelemetry → Elastic/Kibana)
-
-Além de *traces*, a API também publica **métricas** via OpenTelemetry:
-
-- HTTP server/client (`AspNetCore` + `HttpClient`)
-- Runtime (.NET GC, threads etc.)
-- Process (CPU/memória)
-
-Para visualizar no Kibana, envie métricas para o stack Elastic via OTLP (APM Server ou Elastic Agent). No `docker compose`, basta garantir as variáveis (exemplo):
-
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://apm-server:8200`
-- `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`
-
-Depois, no Kibana:
-
-- **Observability → Metrics** (ou **Infrastructure**) para *runtime/process*
-- **APM → Services** para ver métricas correlacionadas por serviço
-
-#### Config simples para AWS (posterior)
-
-Se você for enviar telemetria para AWS (por exemplo, usando o AWS Distro for OpenTelemetry Collector), você pode apontar a aplicação para um collector interno:
-
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://<collector>:4318`
-- `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`
-
-Um exemplo de config de collector (OTLP receiver + export) pode ser adicionado em `infra/aws/otel-collector.yaml`.
+> Observação: a API chama `EnsureCreated()` no startup para simplificar o desafio. Em produção, use **migrations**.
 
 ---
 
----
+## 2) Mapeamento direto dos requisitos do desafio
 
-## Consumer (RabbitMQ)
-
-Além do **Worker** (que publica eventos via Outbox), o compose sobe um **Consumer de exemplo** (`pv-consumer`) que:
-
-- Cria/binda a fila `tx.events.audit` no exchange `tx.events` (topic, binding `#`)
-- Consome eventos publicados pelo sistema
-- Loga o payload em JSON (Filebeat -> Elasticsearch -> Kibana)
-- (Opcional) Indexa o evento cru em `pv-events-YYYY.MM.DD` (Elasticsearch), criando o data view `pv-events-*`
-
-Ver logs do consumer:
-```bash
-docker compose logs -f consumer
-```
-
-## Como rodar (Docker)
-
-```bash
-docker compose up --build
-```
-
-### Troubleshooting (containers não sobem)
-
-Veja status:
-```bash
-docker compose ps
-```
-
-Veja logs do serviço com problema:
-```bash
-docker compose logs -f filebeat
-docker compose logs -f worker
-docker compose logs -f sqlserver
-docker compose logs -f elasticsearch
-```
-
-Reset completo (remove volumes/dados persistidos) — útil quando você alterou o compose:
-```bash
-docker compose down -v
-docker compose up --build
-```
-
-**Elasticsearch não inicia (Linux):** ajuste `vm.max_map_count`:
-```bash
-sudo sysctl -w vm.max_map_count=262144
-```
-
-**Worker aparentemente “não faz nada”:** ele roda em loop e processa Outbox/Fila. Se não houver eventos pendentes, ele fica ocioso. Crie uma conta e rode uma transação para ver atividade.
-
-Health:
-- `GET http://localhost:5000/health/live`
-- `GET http://localhost:5000/health/ready`
+| Requisito do enunciado | Como foi atendido |
+|---|---|
+| C# .NET 9 + async/await | Projetos em .NET 9, handlers/infra assíncronos |
+| API REST e/ou CLI | API Minimal + Swagger + projeto CLI opcional |
+| Regras de negócio (credit, debit, reserve, capture, reversal, transfer) | Implementadas no **Domain** e orquestradas no **Application** |
+| “Saldo disponível não pode ficar negativo” | Regra modelada como `AvailableBalance = Balance - ReservedBalance`; `reserve` valida `AvailableBalance` |
+| “Débito considera saldo disponível + limite de crédito” | `Debit()` permite saldo negativo até `CreditLimit` |
+| Concorrência por conta (bloquear operações concorrentes na mesma conta) | `SELECT ... WITH (UPDLOCK, ROWLOCK)` + transação SQL |
+| Atomicidade | Cada operação ocorre dentro de **uma transação SQL**; `transfer/reversal` multi-contas é atômico |
+| Eventos assíncronos | **Outbox** grava evento na mesma transação; **Worker** publica no RabbitMQ |
+| Retry com backoff exponencial | Outbox Publisher com backoff exponencial + jitter; deadlock/concurrency retry no caso de uso |
+| Idempotência por `reference_id` | Índice **UNIQUE** + “read-your-writes” retornando o persistido |
+| Rollback em falhas | Transação SQL garante rollback; falhas de regra de negócio persistem `failed` (auditável) |
+| Logs/métricas/tracing/health | Serilog JSON + OpenTelemetry + health endpoints |
+| Docker (diferencial) | `docker-compose.yml` sobe stack completa (SQL/RabbitMQ/EFK/APM) |
+| Testes unitários e integração | xUnit + Testcontainers (SQL Server), cenários + concorrência + idempotência |
 
 ---
 
-## Endpoints
+## 3) Arquitetura
 
-### Criar conta
-`POST /api/accounts`
+### 3.1 Estrutura de projetos
 
-Exemplo:
+- `src/PagueVeloz.TransactionProcessor.Api`  
+  **REST** + Swagger + serialização `snake_case` + health checks + OpenTelemetry.
+- `src/PagueVeloz.TransactionProcessor.Application`  
+  Casos de uso com **MediatR**, validação com **FluentValidation**, contratos (DTOs).
+- `src/PagueVeloz.TransactionProcessor.Domain`  
+  Regras/invariantes do domínio: saldo, reserva/captura, limite de crédito, status.
+- `src/PagueVeloz.TransactionProcessor.Infrastructure`  
+  Persistência (EF Core + SQL Server), repositórios, Outbox, fila interna, publisher RabbitMQ.
+- `src/PagueVeloz.TransactionProcessor.Worker`  
+  Processa Outbox (publica eventos) + processa fila interna de comandos assíncronos.
+- `src/PagueVeloz.TransactionProcessor.Cli`  
+  Cliente de linha de comando para enviar lotes de transações.
+- `src/PagueVeloz.TransactionProcessor.EventConsumer`  
+  Consumidor de exemplo para auditar eventos publicados no RabbitMQ (usado no compose).
+
+### 3.2 Por que Clean Architecture / DDD-ish?
+
+- **Separação de responsabilidades**: domínio não depende de framework.
+- **Extensibilidade**: facilita futura divisão em microsserviços (ex.: “Account Service”, “Transaction Service”).
+- **Testabilidade**: regras em `Domain` testadas sem banco/infra.
+
+Diagrama (alto nível):
+
+```mermaid
+flowchart LR
+  CLI[CLI] --> API[API]
+  API --> APP[Application]
+  APP --> DOM[Domain]
+  APP --> INFRA[Infrastructure]
+  INFRA --> DB[(SQL Server)]
+  INFRA --> OUTBOX[(OutboxEvents)]
+  WORKER[Worker] --> OUTBOX
+  WORKER --> MQ[(RabbitMQ)]
+  CONSUMER[Consumer] --> MQ
+```
+
+---
+
+## 4) Modelo de Domínio e regras
+
+### 4.1 Agregado `Account`
+
+Campos principais:
+- `Balance` (saldo total)
+- `ReservedBalance` (saldo reservado)
+- `AvailableBalance = Balance - ReservedBalance`
+- `CreditLimit` (limite de crédito)
+- `Status` (`Active`, `Inactive`, `Blocked`)
+- `LedgerSequence` (sequência monotônica para ledger por conta)
+
+### 4.2 Semântica das operações
+
+| Operação | Efeito no estado |
+|---|---|
+| `credit` | `Balance += amount` |
+| `debit` | `Balance -= amount` (pode ficar negativo até `CreditLimit`) |
+| `reserve` | `ReservedBalance += amount` (exige `AvailableBalance >= amount`) |
+| `capture` | `ReservedBalance -= amount` e `Balance -= amount` |
+| `transfer` | `Debit` na origem + `Credit` no destino (na **mesma transação SQL**) |
+| `reversal` | Reverte a transação anterior (ver seção 6) |
+
+> Observação: `capture` aceita opcionalmente `related_reference_id` para rastreio/auditoria do “reserva → captura”, mas a consistência é garantida pelo saldo reservado, não por “amarração” a um id de reserva (mantém o escopo simples e eficiente para o desafio).
+
+---
+
+## 5) Persistência e modelagem relacional
+
+Banco: **SQL Server** via **EF Core 9**.
+
+### Tabelas principais
+- `Accounts`  
+  Saldo, reservado, limite, status, `LedgerSequence`, `RowVersion`.
+- `Transactions`  
+  Registro idempotente por `ReferenceId` (**UNIQUE**).
+- `AccountEvents`  
+  Ledger imutável por conta (chave única `(AccountId, Sequence)`).
+- `OutboxEvents`  
+  Eventos pendentes de publicação (tentativas, próximo retry, erro).
+- `QueuedCommands`  
+  Fila interna para processar `/transactions/enqueue`.
+
+### Índices relevantes
+- `Transactions.ReferenceId` **UNIQUE** (idempotência forte)
+- `AccountEvents (AccountId, Sequence)` **UNIQUE** (ledger consistente)
+- `OutboxEvents (ProcessedAt, NextAttemptAt)` (varredura eficiente)
+- `QueuedCommands (Status, EnqueuedAt)` (dequeue eficiente)
+
+---
+
+## 6) Concorrência, atomicidade e idempotência
+
+### 6.1 Por que locking pessimista aqui?
+
+Em “ledger de pagamentos”, o problema clássico é **double spend** em alta concorrência.  
+A escolha foi **pessimistic locking** no SQL Server:
+
+- `SELECT ... WITH (UPDLOCK, ROWLOCK)` para **bloquear concorrentes** na mesma conta.
+- **Transação SQL** ao redor de toda operação, com **IsolationLevel.Serializable** no processamento síncrono (simplifica raciocínio e evita anomalias).
+- Para operações com **duas contas** (`transfer`, `reversal` de transfer), aplica-se **ordenação de locks** (ordem lexicográfica do `account_id`) para reduzir risco de deadlocks.
+
+### 6.2 Retry de concorrência / deadlock
+
+O caso de uso faz retry em:
+- `DbUpdateConcurrencyException`
+- Deadlock SQL Server (erro 1205)
+
+Com limite de tentativas (`maxAttempts`), limpando o ChangeTracker e esperando entre tentativas.
+
+### 6.3 Idempotência
+
+Estratégia “dupla” (lógica + banco):
+
+1. Antes de processar, consulta `Transactions` por `reference_id`.
+2. Persistência garante unicidade: índice **UNIQUE** em `Transactions.ReferenceId`.
+
+Repetiu o mesmo comando?  
+✅ retorna o resultado persistido, sem re-aplicar regras de negócio.
+
+---
+
+## 7) Eventos, Outbox e processamento assíncrono
+
+### 7.1 Outbox Pattern (por quê)
+
+Publicar em broker *dentro* da mesma transação do banco exigiria “distributed transaction” (2PC) ou riscos de inconsistência (commita banco mas falha publish).  
+O **Outbox** resolve isso:
+
+- O caso de uso grava `OutboxEvents` **na mesma transação** que atualiza conta/transação.
+- O **Worker** varre outbox e publica em RabbitMQ.
+- Publicação é **at-least-once** (consumidores devem ser idempotentes).
+
+### 7.2 Retry com backoff exponencial + jitter
+
+No Worker:
+- calcula `NextAttemptAt` com backoff exponencial (cap em 60s) + jitter.
+- registra `Attempts` e `LastError`.
+
+### 7.3 Circuit breaker (diferencial)
+
+Se o broker estiver instável:
+- abre circuito após N exceções
+- pausa por ~30s
+- evita tempestade de retries e protege o banco.
+
+### 7.4 Fila interna de comandos (simulação de alto volume)
+
+Endpoint `POST /api/transactions/enqueue` grava um comando em `QueuedCommands`.  
+O Worker:
+- faz `TryDequeue` com `UPDLOCK + READPAST` (safe dequeue)
+- executa o mesmo `ProcessTransaction`
+- marca como `Done` ou `Failed`.
+
+---
+
+## 8) API REST
+
+### 8.1 Padrões
+- JSON `snake_case`
+- Valores monetários em **centavos** (`long`)
+- `reference_id` obrigatório (idempotência)
+
+### 8.2 Endpoints
+
+**Accounts**
+- `POST /api/accounts` – cria conta
+- `GET /api/accounts/{accountId}` – consulta conta
+- `GET /api/accounts/{accountId}/transactions` – histórico da conta
+
+**Transactions**
+- `POST /api/transactions` – processa síncrono
+- `POST /api/transactions/enqueue` – enfileira assíncrono (retorna `202 Accepted`)
+- `GET /api/transactions/{referenceId}` – consulta resultado persistido
+
+### 8.3 Exemplo (criar conta)
+
 ```bash
 curl -X POST http://localhost:5000/api/accounts \
   -H "Content-Type: application/json" \
   -d @samples/create_account.json
 ```
 
-### Consultar conta
-`GET /api/accounts/{account_id}`
+### 8.4 Exemplo (crédito)
 
-### Processar transação (síncrono)
-`POST /api/transactions`
+```bash
+curl -X POST http://localhost:5000/api/transactions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operation": "credit",
+    "account_id": "ACC-001",
+    "amount": 10000,
+    "currency": "BRL",
+    "reference_id": "TXN-001",
+    "metadata": { "description": "Depósito inicial" }
+  }'
+```
 
-### Enfileirar transação (assíncrono)
-`POST /api/transactions/enqueue`
+**Resposta típica (success):**
+```json
+{
+  "transaction_id": "TXN-001-PROCESSED",
+  "status": "success",
+  "balance": 10000,
+  "reserved_balance": 0,
+  "available_balance": 10000,
+  "timestamp": "2026-01-31T18:00:00.0000000Z",
+  "error_message": null
+}
+```
 
-- Retorna `202 Accepted` com status `pending`.
-- O **Worker** consome `QueuedCommands` e executa o mesmo caso de uso.
+**Resposta típica (failed):**
+```json
+{
+  "transaction_id": "TXN-003-PROCESSED",
+  "status": "failed",
+  "balance": 80000,
+  "reserved_balance": 0,
+  "available_balance": 80000,
+  "timestamp": "2026-01-31T18:00:00.0000000Z",
+  "error_message": "Insufficient funds considering credit limit."
+}
+```
 
-### Consultar transação
-`GET /api/transactions/{reference_id}`
+> HTTP status: a API devolve `200` para sucesso e `400/404` quando `status=failed` (conforme tipo de erro).
+
+### 8.5 OpenAPI/Swagger
+Swagger disponível em: `http://localhost:5000/swagger`
 
 ---
 
-## CLI (opcional)
+## 9) CLI (opcional)
 
-Enviar um arquivo JSON de transações:
+Enviar um arquivo JSON (lista de transações):
 
 ```bash
 dotnet run --project src/PagueVeloz.TransactionProcessor.Cli -- --url http://localhost:5000 --file samples/transactions_sync.json
 ```
 
-Para enfileirar:
+Para enfileirar em background:
+
 ```bash
 dotnet run --project src/PagueVeloz.TransactionProcessor.Cli -- --url http://localhost:5000 --file samples/transactions_sync.json --async
 ```
 
 ---
 
-## Testes
+## 10) Observabilidade
 
+### Logs estruturados
+- Serilog JSON (`RenderedCompactJsonFormatter`)
+- Com Docker: logs em `/var/log/pv/*.log` e Filebeat envia para Elasticsearch
+- Kibana: `http://localhost:5601`
+
+KQL úteis:
+- `reference_id : "TXN-001"`
+- `account_id : "ACC-001"`
+- `operation : "debit"`
+
+### Traces e métricas
+- OpenTelemetry (AspNetCore + HttpClient + Runtime + Process)
+- Export OTLP para `apm-server` no compose
+- Kibana → Observability → APM / Metrics
+
+---
+
+## 11) Testes
+
+Rodar todos:
 ```bash
 dotnet test
 ```
 
-- **UnitTests**: regras de negócio do domínio.
-- **IntegrationTests**: sobe SQL Server via Testcontainers e valida concorrência + idempotência.
+- **UnitTests**: valida invariantes do domínio (ex.: debit/reserve/capture).
+- **IntegrationTests**: usa **Testcontainers** para subir SQL Server e testa:
+  - idempotência
+  - concorrência (debits/credits/transfers simultâneos)
+  - cenários do enunciado
+  - fila assíncrona + outbox
 
 ---
 
-## Pontos de extensão / produção
+## 12) Troubleshooting
 
-- Trocar `EnsureCreated()` por **migrations** (EF Core) em ambiente real.
-- Publicar eventos com **schema registry** / versionamento.
-- Consumidores RabbitMQ e DLQ.
-- Rate limiting, authn/authz, multi-tenant.
+Ver status:
+```bash
+docker compose ps
+```
+
+Ver logs:
+```bash
+docker compose logs -f api
+docker compose logs -f worker
+docker compose logs -f sqlserver
+docker compose logs -f rabbitmq
+docker compose logs -f elasticsearch
+docker compose logs -f filebeat
+```
+
+Reset total (remove volumes):
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Elasticsearch não inicia (Linux):
+```bash
+sudo sysctl -w vm.max_map_count=262144
+```
+
+---
+
+## 13) Decisões e trade-offs (resumo)
+
+- **Locking pessimista** (UPDLOCK) em vez de otimista: reduz risco de “lost update” e simplifica consistência em alto volume.
+- **Outbox** em vez de “publish in-tx”: evita necessidade de 2PC e mantém consistência entre banco e eventos.
+- **Fila interna em tabela** para async: simples, reproduzível e suficiente para o desafio; em produção poderia virar broker/stream.
+- **EnsureCreated** para simplificar: em produção, usar migrations + pipeline de deploy.
+
+---
+
+## 14) Próximos passos (se fosse produção)
+
+- Autenticação/Autorização (JWT/OAuth2), multi-tenant (client_id no contexto)
+- Rate limiting + proteção contra abuse
+- Versionamento de eventos + schema registry
+- DLQ + políticas de reprocessamento
+- Migrations + observabilidade “golden signals” (latência, erro, saturação, tráfego)
+- Particionamento/sharding por `account_id` e leitura por réplica
+- Sagas para fluxos distribuídos mais complexos
+
+---
+
+## Docs adicionais
+Veja `docs/` para detalhes:
+- `docs/architecture.md`
+- `docs/operations.md`
+- `docs/concurrency.md`
+- `docs/resilience.md`
+- `docs/testing.md`
+- `docs/runbook.md`
+- `docs/adr/*` (Architecture Decision Records)
