@@ -1,0 +1,87 @@
+filebeat.inputs:
+  - type: filestream
+    id: pv-api
+    enabled: true
+    paths:
+      - /var/log/pv/api*.log
+    parsers:
+      - ndjson:
+          target: ""
+          add_error_key: true
+    fields_under_root: true
+    fields:
+      service:
+        name: pv-api
+      component: api
+
+  - type: filestream
+    id: pv-worker
+    enabled: true
+    paths:
+      - /var/log/pv/worker*.log
+    parsers:
+      - ndjson:
+          target: ""
+          add_error_key: true
+    fields_under_root: true
+    fields:
+      service:
+        name: pv-worker
+      component: worker
+
+  - type: filestream
+    id: pv-consumer
+    enabled: true
+    paths:
+      - /var/log/pv/consumer*.log
+    parsers:
+      - ndjson:
+          target: ""
+          add_error_key: true
+    fields_under_root: true
+    fields:
+      service:
+        name: pv-consumer
+      component: consumer
+
+processors:
+  - add_fields:
+      target: ""
+      fields:
+        env: docker
+        app: pagueveloz-tp
+
+  # Serilog RenderedCompactJsonFormatter emits:
+  #  - timestamp as '@t'
+  #  - message as '@m'
+  #  - level as '@l'
+  # Normalize to Kibana-friendly fields.
+  - timestamp:
+      field: "@t"
+      target_field: "@timestamp"
+      layouts:
+        - "2006-01-02T15:04:05.9999999Z07:00"
+        - "2006-01-02T15:04:05.9999999Z"
+      timezone: "UTC"
+      ignore_missing: true
+
+  - rename:
+      fields:
+        - from: "@m"
+          to: "message"
+        - from: "@l"
+          to: "log.level"
+        - from: "@x"
+          to: "error.stack_trace"
+      ignore_missing: true
+      fail_on_error: false
+
+  - drop_fields:
+      fields: ["@t", "@m", "@l"]
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+setup.kibana:
+  host: "http://kibana:5601"

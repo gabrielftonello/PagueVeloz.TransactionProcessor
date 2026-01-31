@@ -1,0 +1,33 @@
+[
+  {
+    "operation": "credit",
+    "account_id": "ACC-001",
+    "amount": 5000,
+    "currency": "BRL",
+    "reference_id": "TXN-100",
+    "metadata": {
+      "source": "sample"
+    }
+  },
+  {
+    "operation": "reserve",
+    "account_id": "ACC-001",
+    "amount": 2000,
+    "currency": "BRL",
+    "reference_id": "TXN-101",
+    "metadata": {
+      "order_id": "ORD-1"
+    }
+  },
+  {
+    "operation": "capture",
+    "account_id": "ACC-001",
+    "amount": 2000,
+    "currency": "BRL",
+    "reference_id": "TXN-102",
+    "related_reference_id": "TXN-101",
+    "metadata": {
+      "order_id": "ORD-1"
+    }
+  }
+]

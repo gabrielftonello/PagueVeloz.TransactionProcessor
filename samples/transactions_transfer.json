@@ -1,0 +1,32 @@
+[
+  {
+    "operation": "credit",
+    "account_id": "ACC-A",
+    "amount": 10000,
+    "currency": "BRL",
+    "reference_id": "TXN-A-1",
+    "metadata": {}
+  },
+  {
+    "operation": "transfer",
+    "account_id": "ACC-A",
+    "target_account_id": "ACC-B",
+    "amount": 2500,
+    "currency": "BRL",
+    "reference_id": "TXN-A-2",
+    "metadata": {
+      "reason": "payout"
+    }
+  },
+  {
+    "operation": "reversal",
+    "account_id": "ACC-A",
+    "amount": 2500,
+    "currency": "BRL",
+    "reference_id": "TXN-A-3",
+    "related_reference_id": "TXN-A-2",
+    "metadata": {
+      "reason": "chargeback"
+    }
+  }
+]

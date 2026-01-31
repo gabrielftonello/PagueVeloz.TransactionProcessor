@@ -1,0 +1,7 @@
+{
+  "client_id": "CLI-001",
+  "account_id": "ACC-001",
+  "initial_balance": 100000,
+  "credit_limit": 50000,
+  "currency": "BRL"
+}
