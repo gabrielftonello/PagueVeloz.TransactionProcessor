@@ -1,4 +1,3 @@
-using System.Text.Json;
 using MediatR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -7,10 +6,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using PagueVeloz.TransactionProcessor.Application;
-using PagueVeloz.TransactionProcessor.Application.Commands.ProcessTransaction;
-using PagueVeloz.TransactionProcessor.Application.Contracts.Transactions;
 using PagueVeloz.TransactionProcessor.Infrastructure;
-using PagueVeloz.TransactionProcessor.Infrastructure.Persistence;
 using PagueVeloz.TransactionProcessor.Worker;
 using Serilog;
 using Serilog.Formatting.Compact;
@@ -40,7 +36,8 @@ builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddOpenTelemetry()
   .WithTracing(tracerProviderBuilder =>
   {
-    tracerProviderBuilder.SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("PagueVeloz.TransactionProcessor.Worker"));
+    tracerProviderBuilder.SetResourceBuilder(
+      ResourceBuilder.CreateDefault().AddService("PagueVeloz.TransactionProcessor.Worker"));
 
     var otlp = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
     if (!string.IsNullOrWhiteSpace(otlp))
@@ -69,12 +66,6 @@ builder.Logging.ClearProviders();
 builder.Logging.AddSerilog(Log.Logger, dispose: true);
 
 var host = builder.Build();
-
-using (var scope = host.Services.CreateScope())
-{
-  var db = scope.ServiceProvider.GetRequiredService<TransactionDbContext>();
-  await db.Database.EnsureCreatedAsync();
-}
 
 await host.RunAsync();
 

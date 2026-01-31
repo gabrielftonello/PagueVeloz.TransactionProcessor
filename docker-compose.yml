@@ -2,14 +2,16 @@ services:
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: pv-sqlserver
+    restart: unless-stopped
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Your_password123"
       MSSQL_PID: "Express"
     ports:
       - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
     healthcheck:
-      # Some images ship sqlcmd under /opt/mssql-tools/bin, others under /opt/mssql-tools18/bin.
       test: ["CMD-SHELL", "(/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P $$MSSQL_SA_PASSWORD -Q 'SELECT 1' -C || /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P $$MSSQL_SA_PASSWORD -Q 'SELECT 1' -C) >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
@@ -18,13 +20,26 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: pv-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "pv"
+      RABBITMQ_DEFAULT_PASS: "pvpass"
+      RABBITMQ_DEFAULT_VHOST: "/"
     ports:
       - "5672:5672"
       - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
     container_name: pv-elasticsearch
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -42,6 +57,7 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.12.2
     container_name: pv-kibana
+    restart: unless-stopped
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - xpack.security.enabled=false
@@ -50,9 +66,11 @@ services:
     depends_on:
       elasticsearch:
         condition: service_healthy
+
   kibana-setup:
     image: alpine:3.20
     container_name: pv-kibana-setup
+    restart: "no"
     depends_on:
       kibana:
         condition: service_started
@@ -64,12 +82,11 @@ services:
       KIBANA_URL: "http://kibana:5601"
       SAVED_OBJECTS_FILE: "/bootstrap/pv_saved_objects.ndjson"
     entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
-    restart: "no"
-
 
   apm-server:
     image: docker.elastic.co/apm/apm-server:8.12.2
     container_name: pv-apm-server
+    restart: unless-stopped
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -90,6 +107,7 @@ services:
     image: docker.elastic.co/beats/filebeat:8.12.2
     container_name: pv-filebeat
     user: root
+    restart: unless-stopped
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -103,6 +121,7 @@ services:
       context: .
       dockerfile: src/PagueVeloz.TransactionProcessor.Api/Dockerfile
     container_name: pv-api
+    restart: unless-stopped
     labels:
       co.elastic.logs/enabled: "true"
     ports:
@@ -111,11 +130,12 @@ services:
       - pv-logs:/var/log/pv
     environment:
       ASPNETCORE_ENVIRONMENT: "Development"
+      ASPNETCORE_URLS: "http://+:5000"
       ConnectionStrings__SqlServer: "Server=sqlserver,1433;Database=pagueveloz;User Id=sa;Password=Your_password123;TrustServerCertificate=True;Encrypt=False"
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Port: "5672"
-      RabbitMq__Username: "guest"
-      RabbitMq__Password: "guest"
+      RabbitMq__Username: "pv"
+      RabbitMq__Password: "pvpass"
       RabbitMq__VirtualHost: "/"
       RabbitMq__Exchange: "tx.events"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://apm-server:8200"
@@ -125,13 +145,14 @@ services:
       sqlserver:
         condition: service_healthy
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
 
   worker:
     build:
       context: .
       dockerfile: src/PagueVeloz.TransactionProcessor.Worker/Dockerfile
     container_name: pv-worker
+    restart: unless-stopped
     labels:
       co.elastic.logs/enabled: "true"
     volumes:
@@ -140,8 +161,8 @@ services:
       ConnectionStrings__SqlServer: "Server=sqlserver,1433;Database=pagueveloz;User Id=sa;Password=Your_password123;TrustServerCertificate=True;Encrypt=False"
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Port: "5672"
-      RabbitMq__Username: "guest"
-      RabbitMq__Password: "guest"
+      RabbitMq__Username: "pv"
+      RabbitMq__Password: "pvpass"
       RabbitMq__VirtualHost: "/"
       RabbitMq__Exchange: "tx.events"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://apm-server:8200"
@@ -152,12 +173,16 @@ services:
       sqlserver:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      api:
         condition: service_started
+
   consumer:
     build:
       context: .
       dockerfile: src/PagueVeloz.TransactionProcessor.EventConsumer/Dockerfile
     container_name: pv-consumer
+    restart: unless-stopped
     labels:
       co.elastic.logs/enabled: "true"
     volumes:
@@ -165,8 +190,8 @@ services:
     environment:
       RabbitMq__Host: "rabbitmq"
       RabbitMq__Port: "5672"
-      RabbitMq__Username: "guest"
-      RabbitMq__Password: "guest"
+      RabbitMq__Username: "pv"
+      RabbitMq__Password: "pvpass"
       RabbitMq__VirtualHost: "/"
       RabbitMq__Exchange: "tx.events"
       RabbitMq__Queue: "tx.events.audit"
@@ -175,11 +200,12 @@ services:
       Logging__FilePath: "/var/log/pv/consumer.log"
     depends_on:
       rabbitmq:
-        condition: service_started
+        condition: service_healthy
       elasticsearch:
         condition: service_healthy
 
 volumes:
   pv-logs:
   esdata:
-
+  sqlserver-data:
+  rabbitmq-data:
