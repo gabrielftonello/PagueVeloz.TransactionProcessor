@@ -1,0 +1,145 @@
+{
+  "format": 1,
+  "restore": {
+    "/Users/gabriel/Desktop/pague-veloz/tests/PagueVeloz.TransactionProcessor.UnitTests/PagueVeloz.TransactionProcessor.UnitTests.csproj": {}
+  },
+  "projects": {
+    "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/PagueVeloz.TransactionProcessor.Domain.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/PagueVeloz.TransactionProcessor.Domain.csproj",
+        "projectName": "PagueVeloz.TransactionProcessor.Domain",
+        "projectPath": "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/PagueVeloz.TransactionProcessor.Domain.csproj",
+        "packagesPath": "/Users/gabriel/.nuget/packages/",
+        "outputPath": "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/Users/gabriel/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "all"
+        },
+        "SdkAnalysisLevel": "9.0.100"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/9.0.100/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "/Users/gabriel/Desktop/pague-veloz/tests/PagueVeloz.TransactionProcessor.UnitTests/PagueVeloz.TransactionProcessor.UnitTests.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "/Users/gabriel/Desktop/pague-veloz/tests/PagueVeloz.TransactionProcessor.UnitTests/PagueVeloz.TransactionProcessor.UnitTests.csproj",
+        "projectName": "PagueVeloz.TransactionProcessor.UnitTests",
+        "projectPath": "/Users/gabriel/Desktop/pague-veloz/tests/PagueVeloz.TransactionProcessor.UnitTests/PagueVeloz.TransactionProcessor.UnitTests.csproj",
+        "packagesPath": "/Users/gabriel/.nuget/packages/",
+        "outputPath": "/Users/gabriel/Desktop/pague-veloz/tests/PagueVeloz.TransactionProcessor.UnitTests/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/Users/gabriel/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {
+              "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/PagueVeloz.TransactionProcessor.Domain.csproj": {
+                "projectPath": "/Users/gabriel/Desktop/pague-veloz/src/PagueVeloz.TransactionProcessor.Domain/PagueVeloz.TransactionProcessor.Domain.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "all"
+        },
+        "SdkAnalysisLevel": "9.0.100"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "dependencies": {
+            "Microsoft.NET.Test.Sdk": {
+              "target": "Package",
+              "version": "[17.10.0, )"
+            },
+            "xunit": {
+              "target": "Package",
+              "version": "[2.6.6, )"
+            },
+            "xunit.runner.visualstudio": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[2.5.6, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/usr/local/share/dotnet/sdk/9.0.100/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
