@@ -52,7 +52,7 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
     if (existing is not null)
       return Map(existing);
 
-    const int maxAttempts = 6;
+    const int maxAttempts = 20;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++)
     {
@@ -60,13 +60,6 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
 
       try
       {
-        existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
-        if (existing is not null)
-        {
-          await tx.CommitAsync(ct);
-          return Map(existing);
-        }
-
         var now = _clock.UtcNow;
 
         PersistedTransaction persisted;
@@ -75,44 +68,146 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
         switch (op)
         {
           case OperationType.Credit:
-            (persisted, ledgerEvent) = await HandleSingleAccountAsync(
-              req, op, transactionId, now, metadata,
-              apply: (a) => a.Credit(req.Amount),
+          {
+            var account = await _accounts.GetForUpdateAsync(req.AccountId, ct)
+              ?? throw new DomainException($"Account '{req.AccountId}' not found.");
+
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
+            (persisted, ledgerEvent) = await HandleSingleAccountLockedAsync(
+              account,
+              req,
+              op,
+              transactionId,
+              now,
+              metadata,
+              apply: a => a.Credit(req.Amount),
               ledgerEventType: "Credited",
               ct);
             break;
+          }
 
           case OperationType.Debit:
-            (persisted, ledgerEvent) = await HandleSingleAccountAsync(
-              req, op, transactionId, now, metadata,
-              apply: (a) => a.Debit(req.Amount),
+          {
+            var account = await _accounts.GetForUpdateAsync(req.AccountId, ct)
+              ?? throw new DomainException($"Account '{req.AccountId}' not found.");
+
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
+            (persisted, ledgerEvent) = await HandleSingleAccountLockedAsync(
+              account,
+              req,
+              op,
+              transactionId,
+              now,
+              metadata,
+              apply: a => a.Debit(req.Amount),
               ledgerEventType: "Debited",
               ct);
             break;
+          }
 
           case OperationType.Reserve:
-            (persisted, ledgerEvent) = await HandleSingleAccountAsync(
-              req, op, transactionId, now, metadata,
-              apply: (a) => a.Reserve(req.Amount),
+          {
+            var account = await _accounts.GetForUpdateAsync(req.AccountId, ct)
+              ?? throw new DomainException($"Account '{req.AccountId}' not found.");
+
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
+            (persisted, ledgerEvent) = await HandleSingleAccountLockedAsync(
+              account,
+              req,
+              op,
+              transactionId,
+              now,
+              metadata,
+              apply: a => a.Reserve(req.Amount),
               ledgerEventType: "Reserved",
               ct);
             break;
+          }
 
           case OperationType.Capture:
-            (persisted, ledgerEvent) = await HandleSingleAccountAsync(
-              req, op, transactionId, now, metadata,
-              apply: (a) => a.Capture(req.Amount),
+          {
+            var account = await _accounts.GetForUpdateAsync(req.AccountId, ct)
+              ?? throw new DomainException($"Account '{req.AccountId}' not found.");
+
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
+            (persisted, ledgerEvent) = await HandleSingleAccountLockedAsync(
+              account,
+              req,
+              op,
+              transactionId,
+              now,
+              metadata,
+              apply: a => a.Capture(req.Amount),
               ledgerEventType: "Captured",
               ct);
             break;
+          }
 
           case OperationType.Transfer:
-            (persisted, ledgerEvent) = await HandleTransferAsync(req, transactionId, now, metadata, ct);
+          {
+            if (string.IsNullOrWhiteSpace(req.TargetAccountId))
+              throw new DomainException("target_account_id is required for transfer.");
+
+            var ids = new[] { req.AccountId, req.TargetAccountId! }
+              .Select(x => x.Trim())
+              .Order(StringComparer.Ordinal)
+              .ToList();
+
+            var locked = await _accounts.GetForUpdateAsync(ids, ct);
+
+            if (locked.Count != ids.Count)
+            {
+              var missing = ids.Except(locked.Select(a => a.AccountId), StringComparer.Ordinal).FirstOrDefault() ?? req.TargetAccountId!;
+              throw new DomainException($"Account '{missing}' not found.");
+            }
+
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
+            (persisted, ledgerEvent) = await HandleTransferLockedAsync(req, transactionId, now, metadata, locked, ct);
             break;
+          }
 
           case OperationType.Reversal:
+          {
+            existing = await _txStore.GetByReferenceIdAsync(req.ReferenceId, ct);
+            if (existing is not null)
+            {
+              await tx.CommitAsync(ct);
+              return Map(existing);
+            }
+
             (persisted, ledgerEvent) = await HandleReversalAsync(req, transactionId, now, metadata, ct);
             break;
+          }
 
           default:
             throw new DomainException($"Unsupported operation: {op}");
@@ -165,17 +260,25 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
         await tx.CommitAsync(ct);
         return Map(failed);
       }
-      catch (DbUpdateConcurrencyException) when (attempt < maxAttempts)
+      catch (DbUpdateConcurrencyException)
       {
         try { await tx.RollbackAsync(ct); } catch { }
         _uow.ClearChangeTracker();
-        await Task.Delay(15 * attempt, ct);
+
+        if (attempt == maxAttempts)
+          break;
+
+        await Task.Delay(Backoff(attempt), ct);
       }
-      catch (Exception ex) when (IsDeadlock(ex) && attempt < maxAttempts)
+      catch (Exception ex) when (IsDeadlock(ex))
       {
         try { await tx.RollbackAsync(ct); } catch { }
         _uow.ClearChangeTracker();
-        await Task.Delay(15 * attempt, ct);
+
+        if (attempt == maxAttempts)
+          break;
+
+        await Task.Delay(Backoff(attempt), ct);
       }
     }
 
@@ -189,7 +292,8 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
     }
   }
 
-  private async Task<(PersistedTransaction tx, AccountEvent ledgerEvent)> HandleSingleAccountAsync(
+  private async Task<(PersistedTransaction tx, AccountEvent ledgerEvent)> HandleSingleAccountLockedAsync(
+    Account account,
     TransactionRequest req,
     OperationType op,
     string transactionId,
@@ -199,9 +303,6 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
     string ledgerEventType,
     CancellationToken ct)
   {
-    var account = await _accounts.GetForUpdateAsync(req.AccountId, ct)
-      ?? throw new DomainException($"Account '{req.AccountId}' not found.");
-
     account.EnsureActive();
     account.EnsureCurrency(req.Currency);
 
@@ -243,25 +344,14 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
     return (persisted, ledgerEvent);
   }
 
-  private async Task<(PersistedTransaction tx, AccountEvent ledgerEvent)> HandleTransferAsync(
+  private async Task<(PersistedTransaction tx, AccountEvent ledgerEvent)> HandleTransferLockedAsync(
     TransactionRequest req,
     string transactionId,
     DateTimeOffset now,
     IReadOnlyDictionary<string, object?> metadata,
+    IReadOnlyList<Account> locked,
     CancellationToken ct)
   {
-    if (string.IsNullOrWhiteSpace(req.TargetAccountId))
-      throw new DomainException("target_account_id is required for transfer.");
-
-    var ids = new[] { req.AccountId, req.TargetAccountId! }.Select(x => x.Trim()).Order(StringComparer.Ordinal).ToList();
-    var locked = await _accounts.GetForUpdateAsync(ids, ct);
-
-    if (locked.Count != ids.Count)
-    {
-      var missing = ids.Except(locked.Select(a => a.AccountId), StringComparer.Ordinal).FirstOrDefault() ?? req.TargetAccountId!;
-      throw new DomainException($"Account '{missing}' not found.");
-    }
-
     var source = locked.Single(a => a.AccountId == req.AccountId);
     var dest = locked.Single(a => a.AccountId == req.TargetAccountId);
 
@@ -514,5 +604,12 @@ public sealed class ProcessTransactionHandler : IRequestHandler<ProcessTransacti
   {
     var sql = FindSqlException(ex);
     return sql is not null && sql.Number == 1205;
+  }
+
+  private static TimeSpan Backoff(int attempt)
+  {
+    var exp = Math.Min(250, (int)(20 * Math.Pow(2, attempt - 1)));
+    var jitter = Random.Shared.Next(0, 30);
+    return TimeSpan.FromMilliseconds(exp + jitter);
   }
 }

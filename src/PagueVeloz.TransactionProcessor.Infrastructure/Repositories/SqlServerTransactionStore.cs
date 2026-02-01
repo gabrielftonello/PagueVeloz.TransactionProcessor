@@ -14,13 +14,13 @@ public sealed class SqlServerTransactionStore : ITransactionStore
 
   public async Task<PersistedTransaction?> GetByReferenceIdAsync(string referenceId, CancellationToken ct)
   {
-    var e = await _db.Transactions.AsNoTracking().SingleOrDefaultAsync(x => x.ReferenceId == referenceId, ct);
+    var e = await _db.Transactions.AsNoTracking().FirstOrDefaultAsync(x => x.ReferenceId == referenceId, ct);
     return e is null ? null : Map(e);
   }
 
   public async Task<PersistedTransaction?> GetByRelatedReferenceIdAsync(string relatedReferenceId, CancellationToken ct)
   {
-    var e = await _db.Transactions.AsNoTracking().SingleOrDefaultAsync(x => x.RelatedReferenceId == relatedReferenceId, ct);
+    var e = await _db.Transactions.AsNoTracking().FirstOrDefaultAsync(x => x.RelatedReferenceId == relatedReferenceId, ct);
     return e is null ? null : Map(e);
   }
 
