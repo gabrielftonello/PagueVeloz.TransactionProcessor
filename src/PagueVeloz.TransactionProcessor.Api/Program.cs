@@ -185,6 +185,21 @@ app.UseExceptionHandler(errorApp =>
       return;
     }
 
+    if (ex is not null && IsUniqueViolation(ex))
+    {
+      context.Response.StatusCode = StatusCodes.Status409Conflict;
+      await context.Response.WriteAsJsonAsync(new
+      {
+        error = "conflict",
+        message = includeDetails ? ex.Message : "Resource already exists.",
+        trace_id = context.TraceIdentifier,
+        exception = includeDetails ? ex.GetType().FullName : null,
+        exception_chain = includeDetails ? Flatten(ex).ToArray() : null,
+        sql = includeDetails ? TrySql(ex) : null
+      });
+      return;
+    }
+
     if (ex is InvalidOperationException ioeExists && IsAlreadyExistsMessage(ioeExists.Message))
     {
       context.Response.StatusCode = StatusCodes.Status409Conflict;
