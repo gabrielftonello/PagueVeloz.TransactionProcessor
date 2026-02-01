@@ -1,6 +1,9 @@
 using MediatR;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using PagueVeloz.TransactionProcessor.Application.Abstractions;
 using PagueVeloz.TransactionProcessor.Application.Contracts.Accounts;
+using PagueVeloz.TransactionProcessor.Domain;
 using PagueVeloz.TransactionProcessor.Domain.Accounts;
 
 namespace PagueVeloz.TransactionProcessor.Application.Commands.CreateAccount;
@@ -26,7 +29,7 @@ public sealed class CreateAccountHandler : IRequestHandler<CreateAccountCommand,
 
     var existing = await _accounts.GetAsync(accountId, ct);
     if (existing is not null)
-      throw new InvalidOperationException($"Account '{accountId}' already exists.");
+      throw new DomainException($"Account '{accountId}' already exists.");
 
     var account = new Account(
       accountId: accountId,
@@ -40,7 +43,15 @@ public sealed class CreateAccountHandler : IRequestHandler<CreateAccountCommand,
     );
 
     await _accounts.AddAsync(account, ct);
-    await _uow.SaveChangesAsync(ct);
+
+    try
+    {
+      await _uow.SaveChangesAsync(ct);
+    }
+    catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+    {
+      throw new DomainException($"Account '{accountId}' already exists.");
+    }
 
     return new AccountResponse(
       AccountId: account.AccountId,
@@ -52,5 +63,21 @@ public sealed class CreateAccountHandler : IRequestHandler<CreateAccountCommand,
       CreditLimit: account.CreditLimit,
       Status: account.Status.ToString().ToLowerInvariant()
     );
+  }
+
+  private static SqlException? FindSqlException(Exception ex)
+  {
+    for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
+    {
+      if (cur is SqlException sql)
+        return sql;
+    }
+    return null;
+  }
+
+  private static bool IsUniqueViolation(Exception ex)
+  {
+    var sql = FindSqlException(ex);
+    return sql is not null && (sql.Number == 2627 || sql.Number == 2601);
   }
 }

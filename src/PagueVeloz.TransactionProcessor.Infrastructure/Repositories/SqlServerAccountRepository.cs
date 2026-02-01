@@ -14,7 +14,7 @@ public sealed class SqlServerAccountRepository : IAccountRepository
 
   public async Task<Account?> GetAsync(string accountId, CancellationToken ct)
   {
-    var e = await _db.Accounts.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct);
+    var e = await _db.Accounts.AsNoTracking().FirstOrDefaultAsync(x => x.AccountId == accountId, ct);
     return e is null ? null : Map(e);
   }
 
@@ -22,7 +22,8 @@ public sealed class SqlServerAccountRepository : IAccountRepository
   {
     var e = await _db.Accounts
       .FromSqlInterpolated($"SELECT * FROM Accounts WITH (UPDLOCK, ROWLOCK) WHERE AccountId = {accountId}")
-      .SingleOrDefaultAsync(ct);
+      .AsNoTracking()
+      .FirstOrDefaultAsync(ct);
 
     return e is null ? null : Map(e);
   }

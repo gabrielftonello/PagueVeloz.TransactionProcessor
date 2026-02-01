@@ -2,6 +2,8 @@ using System.Reflection;
 using FluentValidation;
 using MediatR;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -15,6 +17,7 @@ using PagueVeloz.TransactionProcessor.Application.Contracts.Accounts;
 using PagueVeloz.TransactionProcessor.Application.Contracts.Transactions;
 using PagueVeloz.TransactionProcessor.Application.Queries.GetAccount;
 using PagueVeloz.TransactionProcessor.Application.Queries.GetTransactionByReference;
+using PagueVeloz.TransactionProcessor.Domain;
 using PagueVeloz.TransactionProcessor.Infrastructure;
 using PagueVeloz.TransactionProcessor.Infrastructure.Persistence;
 using Serilog;
@@ -145,6 +148,54 @@ app.UseExceptionHandler(errorApp =>
       return;
     }
 
+    if (ex is DomainException de)
+    {
+      if (IsAlreadyExistsMessage(de.Message))
+      {
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await context.Response.WriteAsJsonAsync(new
+        {
+          error = "conflict",
+          message = includeDetails ? de.Message : "Resource already exists."
+        });
+        return;
+      }
+
+      context.Response.StatusCode = StatusCodes.Status400BadRequest;
+      await context.Response.WriteAsJsonAsync(new
+      {
+        error = "domain_error",
+        message = includeDetails ? de.Message : "Invalid request."
+      });
+      return;
+    }
+
+    if (ex is DbUpdateException due && IsUniqueViolation(due))
+    {
+      context.Response.StatusCode = StatusCodes.Status409Conflict;
+      await context.Response.WriteAsJsonAsync(new
+      {
+        error = "conflict",
+        message = includeDetails ? (due.InnerException?.Message ?? due.Message) : "Resource already exists.",
+        exception = includeDetails ? due.GetType().FullName : null,
+        trace_id = context.TraceIdentifier,
+        exception_chain = includeDetails ? Flatten(due).ToArray() : null,
+        sql = includeDetails ? TrySql(due) : null
+      });
+      return;
+    }
+
+    if (ex is InvalidOperationException ioeExists && IsAlreadyExistsMessage(ioeExists.Message))
+    {
+      context.Response.StatusCode = StatusCodes.Status409Conflict;
+      await context.Response.WriteAsJsonAsync(new
+      {
+        error = "conflict",
+        message = includeDetails ? ioeExists.Message : "Resource already exists."
+      });
+      return;
+    }
+
     if (ex is InvalidOperationException ioe &&
         ioe.Message.StartsWith("Account '", StringComparison.Ordinal) &&
         ioe.Message.EndsWith("' not found.", StringComparison.Ordinal))
@@ -180,8 +231,11 @@ app.UseExceptionHandler(errorApp =>
     await context.Response.WriteAsJsonAsync(new
     {
       error = "internal_error",
+      trace_id = context.TraceIdentifier,
       message = includeDetails ? ex?.Message : "Unexpected error.",
-      exception = includeDetails ? ex?.GetType().FullName : null
+      exception = includeDetails ? ex?.GetType().FullName : null,
+      exception_chain = includeDetails ? Flatten(ex).ToArray() : null,
+      sql = includeDetails ? TrySql(ex) : null
     });
   });
 });
@@ -226,6 +280,7 @@ accounts.MapPost("",
     "- Se account_id não for informado, será gerado automaticamente.")
   .Produces<AccountResponse>(StatusCodes.Status201Created)
   .Produces(StatusCodes.Status400BadRequest)
+  .Produces(StatusCodes.Status409Conflict)
   .Produces(StatusCodes.Status500InternalServerError);
 
 accounts.MapGet("{accountId}",
@@ -359,4 +414,42 @@ static IResult ToEnqueueHttpResult(TransactionRequest req, TransactionResponse r
   }
 
   return Results.Accepted($"/api/transactions/{req.ReferenceId}", res);
+}
+
+static bool IsAlreadyExistsMessage(string? msg)
+{
+  if (string.IsNullOrWhiteSpace(msg)) return false;
+  return msg.Contains("already exists", StringComparison.OrdinalIgnoreCase);
+}
+
+static SqlException? FindSqlException(Exception ex)
+{
+  for (Exception? cur = ex; cur is not null; cur = cur.InnerException)
+  {
+    if (cur is SqlException sql)
+      return sql;
+  }
+  return null;
+}
+
+static bool IsUniqueViolation(Exception ex)
+{
+  var sql = FindSqlException(ex);
+  return sql is not null && (sql.Number == 2627 || sql.Number == 2601);
+}
+
+static IEnumerable<object> Flatten(Exception? ex)
+{
+  for (var cur = ex; cur is not null; cur = cur.InnerException)
+    yield return new { type = cur.GetType().FullName, message = cur.Message };
+}
+
+static object? TrySql(Exception? ex)
+{
+  for (var cur = ex; cur is not null; cur = cur.InnerException)
+  {
+    if (cur is SqlException sql)
+      return new { number = sql.Number, message = sql.Message };
+  }
+  return null;
 }
